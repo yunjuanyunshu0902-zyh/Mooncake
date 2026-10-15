@@ -55,6 +55,11 @@ class TransferMetadata {
 
     struct BufferDesc {
         std::string name;
+#ifdef MOONCAKE_ENABLE_PXN
+        bool isGpuMem;
+        // physical gpuid
+        uint32_t gpuid;
+#endif
         uint64_t addr;
         uint64_t length;
 #ifdef ENABLE_MULTI_PROTOCOL

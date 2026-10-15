@@ -7,3 +7,10 @@ target_link_libraries(rdma_transport PRIVATE JsonCpp::JsonCpp glog::glog
 if(USE_MLX5DV)
   target_compile_definitions(rdma_transport PRIVATE USE_MLX5DV)
 endif()
+
+# ============== PXN (CUDA required) ==============
+if (USE_CUDA AND USE_PXN)
+    add_subdirectory(pxn)
+    target_sources(rdma_transport PUBLIC $<TARGET_OBJECTS:rdma_transport_pxn>)
+    target_include_directories(rdma_transport PUBLIC "/usr/local/cuda/include")
+endif()

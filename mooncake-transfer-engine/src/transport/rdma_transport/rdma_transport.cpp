@@ -14,6 +14,11 @@
 
 #include "transport/rdma_transport/rdma_transport.h"
 
+#ifdef MOONCAKE_ENABLE_PXN
+#include "transport/rdma_transport/pxn/pxn_memory_manager.h"
+#include "transport/rdma_transport/pxn/pxn_runtime_manager.h"
+#endif
+
 #include <glog/logging.h>
 #include <sys/mman.h>
 #include <sys/time.h>
@@ -113,6 +118,11 @@ int RdmaTransport::install(std::string &local_server_name,
     metadata_ = meta;
     local_server_name_ = local_server_name;
     local_topology_ = topo;
+
+#ifdef MOONCAKE_ENABLE_PXN
+    pxn_runtime_mgr_.reset(new pxn::PxnRuntimeManager(
+        local_topology_->getHcaList(), MCIbRelaxedOrderingEnabled));
+#endif
 
     // In dual-NIC environments (e.g. separate TCP and RDMA interfaces),
     // MC_RDMA_BIND_ADDRESS allows NIC paths to use an RDMA-reachable IP
@@ -348,6 +358,10 @@ int RdmaTransport::registerLocalMemoryInternal(void *addr, size_t length,
         buffer_desc.name = name;
     }
 
+#ifdef MOONCAKE_ENABLE_PXN
+    pxn::PxnEnsureGpuMemory(addr, buffer_desc.isGpuMem, buffer_desc.gpuid);
+#endif
+
     buffer_desc.addr = (uint64_t)addr;
     buffer_desc.length = length;
 #ifdef ENABLE_MULTI_PROTOCOL
@@ -574,6 +588,9 @@ Status RdmaTransport::submitTransferTask(
         slices_to_post;
     auto local_segment_desc = metadata_->getSegmentDescByID(LOCAL_SEGMENT_ID);
     assert(local_segment_desc.get());
+#ifdef MOONCAKE_ENABLE_PXN
+    pxn::PxnPackingContext pxn_pack_ctx(&globalConfig());
+#endif
     const size_t kBlockSize = globalConfig().slice_size;
     const int kMaxRetryCount = globalConfig().retry_cnt;
     const size_t kFragmentSize = globalConfig().fragment_limit;
@@ -585,7 +602,14 @@ Status RdmaTransport::submitTransferTask(
         auto &task = *task_list[index];
         nr_slices = 0;
         assert(task.request);
+#ifndef MOONCAKE_ENABLE_PXN
         auto &request = *task.request;
+#else
+        const auto &bypass_requests = PxnRuntimeMgr().PxnPlanAndPack(
+            task_list, index, context_list_, local_segment_desc.get(),
+            kSubmitWatermark, pxn_pack_ctx);
+        for (const auto &request : bypass_requests) {
+#endif
 
         auto request_buffer_id = -1, request_device_id = -1;
         if (selectDevice(local_segment_desc.get(), (uint64_t)request.source,
@@ -690,6 +714,9 @@ Status RdmaTransport::submitTransferTask(
                 break;
             }
         }
+#ifdef MOONCAKE_ENABLE_PXN
+        }  // end for bypass_requests
+#endif
     }
 
     for (auto &entry : slices_to_post)

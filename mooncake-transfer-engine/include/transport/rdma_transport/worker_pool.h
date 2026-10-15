@@ -22,9 +22,20 @@
 #include "rdma_context.h"
 
 namespace mooncake {
+
+#ifdef MOONCAKE_ENABLE_PXN
+namespace pxn {
+struct PxnWorkerPoolState;  // defined in pxn/pxn_worker_pool_state.h
+class PxnRuntimeManager;    // allow access to PXN-related private members
+}
+#endif
+
 class WorkerPoolTestPeer;
 class WorkerPool {
     friend class WorkerPoolTestPeer;
+#ifdef MOONCAKE_ENABLE_PXN
+    friend class pxn::PxnRuntimeManager;
+#endif
 
    public:
     WorkerPool(RdmaContext &context, int numa_socket_id = 0);
@@ -154,6 +165,11 @@ class WorkerPool {
     std::atomic<uint64_t> slice_queue_count_[kShardCount];
     TicketLock slice_queue_lock_[kShardCount];
 
+#ifdef MOONCAKE_ENABLE_PXN
+    // All per-WorkerPool PXN state
+    std::unique_ptr<pxn::PxnWorkerPoolState> pxn_state_;
+#endif
+
     std::vector<std::unordered_map<std::string, SliceList>>
         collective_slice_queue_;
 
@@ -173,6 +189,12 @@ class WorkerPool {
     std::atomic<int> context_failure_count_{0};
     const static int kContextFailureThreshold =
         32;  // consecutive all-rails-failed
+
+#ifdef MOONCAKE_ENABLE_PXN
+   public:
+    // Accessor for the per-WorkerPool PXN state
+    pxn::PxnWorkerPoolState *getPxnState() const { return pxn_state_.get(); }
+#endif
 };
 }  // namespace mooncake
 
