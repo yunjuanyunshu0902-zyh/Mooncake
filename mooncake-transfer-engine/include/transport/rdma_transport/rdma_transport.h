@@ -38,6 +38,11 @@ class RdmaEndPoint;
 class TransferMetadata;
 class RdmaTransportTestPeer;
 class WorkerPool;
+#ifdef MOONCAKE_ENABLE_PXN
+namespace pxn {
+class PxnRuntimeManager;
+}
+#endif
 
 class RdmaTransport : public Transport {
     friend class RdmaContext;
@@ -60,6 +65,17 @@ class RdmaTransport : public Transport {
                 std::shared_ptr<Topology> topo) override;
 
     const char *getName() const override { return "rdma"; }
+
+#ifdef MOONCAKE_ENABLE_PXN
+    // Override PXN slice completion handler
+    // Implementation is in src/transport/rdma_transport/pxn/pxn_slice_completion.cpp
+    void pxnSliceCompletion(Slice *slice) override;
+
+    // Override PXN task-owned CW reclaim hook. Implemented in
+    // pxn_slice_completion.cpp; decrements each CW's pxn_task_refcount and
+    // returns it to the TLS pool when it reaches zero.
+    void pxnFreeTaskCws(std::vector<void *> &cws) override;
+#endif
 
     int registerLocalMemory(void *addr, size_t length,
                             const std::string &location, bool remote_accessible,
@@ -144,6 +160,10 @@ class RdmaTransport : public Transport {
    private:
     std::vector<std::shared_ptr<RdmaContext>> context_list_;
     std::shared_ptr<Topology> local_topology_;
+#ifdef MOONCAKE_ENABLE_PXN
+    // PXN runtime service object
+    std::unique_ptr<pxn::PxnRuntimeManager> pxn_runtime_mgr_;
+#endif
     // When MC_RDMA_BIND_ADDRESS is set in a dual-NIC environment,
     // rdma_server_name_ holds the RDMA-reachable address (e.g.
     // "192.168.0.y:port") for NIC path construction, while
@@ -157,6 +177,11 @@ class RdmaTransport : public Transport {
     // start-addresses for cleanup.
     std::mutex chunk_map_mutex_;
     std::unordered_map<uint64_t, std::vector<uint64_t>> chunk_map_;
+#ifdef MOONCAKE_ENABLE_PXN
+   public:
+    // Returns the PxnRuntimeManager owned by this transport
+    pxn::PxnRuntimeManager &PxnRuntimeMgr() const { return *pxn_runtime_mgr_; }
+#endif
 };
 
 using TransferRequest = Transport::TransferRequest;

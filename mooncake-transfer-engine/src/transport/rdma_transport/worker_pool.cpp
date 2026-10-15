@@ -32,6 +32,11 @@
 #include "transport/rdma_transport/rdma_endpoint.h"
 #include "transport/rdma_transport/rdma_transport.h"
 
+#ifdef MOONCAKE_ENABLE_PXN
+#include "transport/rdma_transport/pxn/pxn_runtime_manager.h"
+#include "transport/rdma_transport/pxn/pxn_worker_pool_state.h"
+#endif
+
 // Experimental: Per-thread SegmentDesc & EndPoint Caches
 // #define CONFIG_CACHE_SEGMENT_DESC
 // #define CONFIG_CACHE_ENDPOINT
@@ -234,6 +239,11 @@ WorkerPool::WorkerPool(RdmaContext &context, int numa_socket_id)
       submitted_slice_count_(0),
       processed_slice_count_(0) {
     collective_slice_queue_.resize(worker_count_);
+#ifdef MOONCAKE_ENABLE_PXN
+    pxn_state_.reset(new pxn::PxnWorkerPoolState(numa_socket_id_));
+    context_.engine().PxnRuntimeMgr().PxnInitWorkerPoolState(
+        pxn_state_.get(), &context_, worker_count_, NULL);
+#endif
     for (int i = 0; i < worker_count_; ++i)
         worker_thread_.emplace_back(
             std::thread(std::bind(&WorkerPool::transferWorker, this, i)));
@@ -289,6 +299,9 @@ int WorkerPool::submitPostSend(
     }
 
     for (auto &slice : slice_list) {
+#ifdef MOONCAKE_ENABLE_PXN
+        if (slice->pxn_info.is_copy_worker) continue;
+#endif
         auto target_id = slice->target_id;
         if (!segment_desc_map.count(target_id)) {
             segment_desc_map[target_id] =
@@ -305,6 +318,9 @@ int WorkerPool::submitPostSend(
     std::unordered_map<SegmentID, std::shared_ptr<RdmaTransport::SegmentDesc>>
         segment_desc_map;
     for (auto &slice : slice_list) {
+#ifdef MOONCAKE_ENABLE_PXN
+        if (slice->pxn_info.is_copy_worker) continue;
+#endif
         auto target_id = slice->target_id;
         if (!segment_desc_map.count(target_id))
             segment_desc_map[target_id] =
@@ -313,10 +329,22 @@ int WorkerPool::submitPostSend(
 #endif  // CONFIG_CACHE_SEGMENT_DESC
 
     SliceList prepared_slice_list;
+#ifdef MOONCAKE_ENABLE_PXN
+    // used for collect PXN CopyWorker slice
+    std::vector<Transport::Slice *> pxn_slices;
+#endif
     uint64_t submitted_slice_count = 0;
     int all_rails_failed_count = 0;
     thread_local std::unordered_map<int, uint64_t> failed_target_ids;
     for (auto &slice : slice_list) {
+#ifdef MOONCAKE_ENABLE_PXN
+        // pxn copyworker, select peer device must be succeed
+        // not refer failed_target_ids
+        if (slice->pxn_info.is_copy_worker) {
+            pxn_slices.push_back(slice);
+            continue;
+        }
+#endif
         if (failed_target_ids.count(slice->target_id)) {
             auto ts = failed_target_ids[slice->target_id];
             if (getCurrentTimeInNano() - ts < 100000000ull) {
@@ -408,7 +436,13 @@ int WorkerPool::submitPostSend(
         prepared_slice_list.push_back(slice);
         submitted_slice_count++;
     }
-
+#ifdef MOONCAKE_ENABLE_PXN
+    if (!pxn_slices.empty() && pxn_state_) {
+        // PXN CopyWorker slice dispatch to work pool thread
+        context_.engine().PxnRuntimeMgr().PxnRouteSlicesToShards(
+            pxn_state_.get(), pxn_slices, submitted_slice_count);
+    }
+#endif
     enqueuePreparedSlices(prepared_slice_list, submitted_slice_count);
 
     // Context-level health tracking: if all slices failed due to no available
@@ -1121,6 +1155,13 @@ void WorkerPool::transferWorker(int thread_id) {
             }
             continue;
         }
+#ifdef MOONCAKE_ENABLE_PXN
+        if (pxn_state_) {
+            context_.engine().PxnRuntimeMgr().PxnRunDispatcherOnce(
+                pxn_state_.get(), thread_id,
+                &collective_slice_queue_[thread_id]);
+        }
+#endif
         performPostSend(thread_id);
 #ifndef USE_FAKE_POST_SEND
         performPollCq(thread_id);

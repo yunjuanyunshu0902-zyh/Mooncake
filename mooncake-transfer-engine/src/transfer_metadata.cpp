@@ -364,6 +364,10 @@ static int encodeMultiProtocolSegmentDesc(
             Json::Value lkeyJSON(Json::arrayValue);
             for (auto &entry : buffer.lkey) lkeyJSON.append(entry);
             bufferJSON["lkey"] = lkeyJSON;
+#ifdef MOONCAKE_ENABLE_PXN
+            bufferJSON["isGpuMem"] = buffer.isGpuMem;
+            bufferJSON["gpuid"] = buffer.gpuid;
+#endif
         } else if (buffer.protocol == "tcp") {
             bufferJSON["addr"] = static_cast<Json::UInt64>(buffer.addr);
         } else if (buffer.protocol == "hip" || buffer.protocol == "maca" ||
@@ -456,6 +460,10 @@ int TransferMetadata::encodeSegmentDesc(const SegmentDesc &desc,
             Json::Value lkeyJSON(Json::arrayValue);
             for (auto &entry : buffer.lkey) lkeyJSON.append(entry);
             bufferJSON["lkey"] = lkeyJSON;
+#ifdef MOONCAKE_ENABLE_PXN
+            bufferJSON["isGpuMem"] = buffer.isGpuMem;
+            bufferJSON["gpuid"] = buffer.gpuid;
+#endif
             buffersJSON.append(bufferJSON);
         }
         segmentJSON["buffers"] = buffersJSON;
@@ -716,6 +724,12 @@ decodeMultiProtocolSegmentDesc(Json::Value &segmentJSON,
             // devices, and a publisher emits exactly one key per device, so a
             // key vector longer than the device list lets that index run past
             // the end of devices[]. See the comment in decodeSegmentDesc.
+#ifdef MOONCAKE_ENABLE_PXN
+            if (bufferJSON.isMember("isGpuMem"))
+                buffer.isGpuMem = bufferJSON["isGpuMem"].asBool();
+            if (bufferJSON.isMember("gpuid"))
+                buffer.gpuid = bufferJSON["gpuid"].asUInt();
+#endif
             if (buffer.name.empty() || !buffer.addr || !buffer.length ||
                 (!buffer.rkey.empty() &&
                  (buffer.rkey.size() != buffer.lkey.size() ||
@@ -859,6 +873,12 @@ TransferMetadata::decodeSegmentDesc(Json::Value &segmentJSON,
                 buffer.lkey.push_back(
                     static_cast<decltype(buffer.lkey)::value_type>(
                         lkeyJSON.asUInt64()));
+#ifdef MOONCAKE_ENABLE_PXN
+            if (bufferJSON.isMember("isGpuMem"))
+                buffer.isGpuMem = bufferJSON["isGpuMem"].asBool();
+            if (bufferJSON.isMember("gpuid"))
+                buffer.gpuid = bufferJSON["gpuid"].asUInt();
+#endif
             if (buffer.name.empty() || !buffer.addr || !buffer.length ||
                 (!buffer.rkey.empty() &&
                  (buffer.rkey.size() != buffer.lkey.size() ||
